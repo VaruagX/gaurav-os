@@ -1,0 +1,4 @@
+<resources>
+  <string name="gauravos_call_speaker_desc">GAURAV OS uses this only on the phone\'s call screen, to press the Speaker button after the call assistant answers a call by voice. It does not read or store anything.</string>
+  <string name="widget_description">Today\'s lectures, attendance and quick add</string>
+</resources>

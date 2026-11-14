@@ -1,0 +1,22 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'com.gaurav.os.reminder'
+version = '1.0.0'
+
+android {
+  namespace "expo.modules.reminder"
+  defaultConfig {
+    versionCode 1
+    versionName "1.0.0"
+    consumerProguardFiles 'consumer-rules.pro'
+  }
+}
+
+dependencies {
+  implementation 'com.alphacephei:vosk-android:0.3.47'
+  implementation 'com.google.mlkit:text-recognition:16.0.1'
+  testImplementation 'junit:junit:4.13.2'
+}
