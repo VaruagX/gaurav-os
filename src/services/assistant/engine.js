@@ -6,7 +6,7 @@ import {
 import { saveReminder, deleteReminder, blankReminder, setEnabled } from '../reminders/reminderService';
 import { nextOccurrence, repeatLabel, serializeWeekdays } from '../reminders/schedule';
 import { getDaySchedule } from '../daySchedule';
-import { overall, pct, shortages, classesNeeded, classesCanSkip } from '../college/attendance';
+import { overall, pct, shortages, classesNeeded, classesCanSkip, overallRecovery, OVERALL_TARGET } from '../college/attendance';
 import { nextRevision } from '../study/spaced';
 import { bunkProjection } from '../college/lectureLogic';
 import { formatPaise } from '../khata/money';
@@ -25,6 +25,8 @@ export const SUGGESTIONS = [
   'When is my next class?',
   'Show my attendance',
   'Can I skip tomorrow?',
+  "What's due this week?",
+  'When will I reach 75%?',
   'Show my pending tasks',
   'Set reminder at 10 PM good night',
   'How much did I spend today?',
@@ -54,6 +56,8 @@ export async function handleCommand(input, { userName = 'Gaurav', pending = null
   if (/\b(summary|summari[sz]e|brief me|my day|daily brief|overview)\b/.test(t)) return daySummary(userName);
   if (/\b(all|every)\b.*\breminders\b|^(list|show) reminders$/.test(t)) return allReminders();
   if (/\b(pause|turn off|disable|switch off|resume|turn on|enable|switch on)\b.*\breminder/.test(t)) return toggleReminderIntent(t);
+  if (/\bwhen\b.*\b(reach|get|be|become|hit|cross|safe)\b.*\b(\d{2}\s*%?|target)|\b(\d{2}\s*%|target)\b.*\b(date|which day|when)\b/.test(t)) return targetDateIntent(t);
+  if (/\bwhat('?s| is| are)\b.*\b(due|deadlines?)\b|\b(due|deadlines?|submissions?)\b.*\b(this week|next week|tomorrow|today)\b|\bwhat'?s pending\b/.test(t)) return dueIntent(t);
   if (/\b(can|should|may) i\b.*\b(bunk|skip|miss)\b|\bbunk\b/.test(t)) return bunkIntent(t);
   if (/\b(attended|missed|bunked|skipped)\b/.test(t) || /\bmark\b.*\b(present|absent)\b|\bi was (present|absent)\b/.test(t)) return markAttendanceIntent(t);
   if (/\b(spent|spend|spending|expenses?)\b/.test(t) && /\b(how much|total|show|what|so far|today|month|week)\b/.test(t) && !/^(add|log|record)\b/.test(t)) return spendingIntent(t);
@@ -340,21 +344,84 @@ async function markAttendanceIntent(t) {
   return reply(`Marked ${sub.name} as ${status} for today. ${sub.name} attendance is now ${pct(row.present, row.total).toFixed(1)}% (${row.present}/${row.total}).`, { intent: 'mark_attendance' });
 }
 
+/** Day offset from today for "today", "tomorrow", "day after tomorrow" or a weekday name (next occurrence). Defaults to tomorrow. */
+function dayOffsetOf(t) {
+  if (/\bday after tomorrow\b/.test(t)) return { offset: 2, word: 'the day after tomorrow' };
+  if (/\btomorrow\b/.test(t)) return { offset: 1, word: 'tomorrow' };
+  if (/\btoday\b/.test(t)) return { offset: 0, word: 'today' };
+  const names = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+  const k = names.findIndex((n) => new RegExp(`\\b${n}\\b`).test(t));
+  if (k >= 0) { const offset = ((k + 1 - isoWeekday() + 7) % 7) || 7; return { offset, word: `on ${names[k][0].toUpperCase()}${names[k].slice(1)}` }; }
+  return { offset: 1, word: 'tomorrow' };
+}
+
 async function bunkIntent(t) {
-  const offset = /\btoday\b/.test(t) ? 0 : 1;
+  const { offset, word } = dayOffsetOf(t);
   const date = addDays(new Date(), offset);
   const only = await findSubject(t);
   const lectures = (await timetableRepository.forDay(isoWeekday(date))).filter((l) => !only || l.subject_id === only.id);
-  const word = offset ? 'tomorrow' : 'today';
   if (!lectures.length) return reply(`You have no ${only ? `${only.name} ` : ''}lectures ${word}, so there is nothing to skip.`, { intent: 'bunk' });
   const skips = {};
   lectures.forEach((l) => { skips[l.subject_id] = (skips[l.subject_id] || 0) + 1; });
-  const proj = bunkProjection(await attendanceRepository.summary(), skips);
+  const summary = await attendanceRepository.summary();
+  const proj = bunkProjection(summary, skips);
   if (!proj.length) return reply(`No attendance recorded yet, so I can't predict the effect of skipping ${word}.`, { intent: 'bunk' });
   const lines = proj.map((p) => `• ${p.name}: ${p.before === null ? '—' : p.before.toFixed(1)}% → ${p.after.toFixed(1)}% ${p.safe ? '(stays above' : '(drops below'} ${p.target}%)`);
   const bad = proj.filter((p) => !p.safe);
-  return reply(`If you skip ${lectures.length} lecture${lectures.length > 1 ? 's' : ''} ${word}:\n${lines.join('\n')}\n${bad.length ? `Not recommended: ${bad.map((b) => b.name).join(', ')} would fall below target.` : 'Safe to skip — every subject stays above target.'}`, { intent: 'bunk' });
+  // Overall view: skipped lectures add to the total but not to "present".
+  const o = overall(summary);
+  const n = lectures.length;
+  const afterAdj = summary.map((x) => ({ ...x, total: x.total + (skips[x.id] || 0) }));
+  const oa = overall(afterAdj);
+  let overallLine = '';
+  if (o.total > 0) {
+    overallLine = `\nOverall: ${o.pct.toFixed(1)}% → ${oa.pct.toFixed(1)}%.`;
+    const rec = overallRecovery(afterAdj, await timetableRepository.week(), 0);
+    overallLine += rec.ok ? ` Still above ${OVERALL_TARGET}%.` : rec.reachable && rec.date ? ` You'd reach ${OVERALL_TARGET}% overall on ${fmtDateShort(new Date(rec.date + 'T00:00:00'))} (${fmtTime(rec.lecture.start_time)} ${rec.lecture.subject_name}) if you attend everything after that.` : '';
+  }
+  const verdict = bad.length ? `Not recommended: ${bad.map((b) => b.name).join(', ')} would fall below target.` : 'Safe to skip — every subject stays above target.';
+  return reply(`If you skip ${n} lecture${n > 1 ? 's' : ''} ${word}:\n${lines.join('\n')}${overallLine}\n${verdict}`, { intent: 'bunk' });
 }
+
+/** "When will I reach 75%?" / "if I miss 2 days, when will I be at 75%?" — overall attendance projection. */
+async function targetDateIntent(t) {
+  const summary = await attendanceRepository.summary();
+  const o = overall(summary);
+  if (!o.total) return reply('No attendance recorded yet, so I can\'t project a date. Mark a few lectures first.', { intent: 'target_date', navigate: { screen: 'Attendance' } });
+  const m = t.match(/\b(\d+)\s*(?:class\s*)?days?\b/);
+  const days = m && /\b(absent|miss|bunk|skip|leave)\b/.test(t) ? Math.min(30, Number(m[1])) : /\btomorrow\b/.test(t) && /\b(absent|miss|bunk|skip)\b/.test(t) ? 1 : 0;
+  const week = await timetableRepository.week();
+  if (!week.length) return reply('Add your timetable (College → Timetable) so I can work out the date.', { intent: 'target_date', navigate: { screen: 'Timetable' } });
+  const r = overallRecovery(summary, week, days);
+  const lead = days ? `If you miss the next ${days} class day${days > 1 ? 's' : ''}, overall goes ${o.pct.toFixed(1)}% → ${r.afterAbsence.toFixed(1)}%. ` : `Overall is ${o.pct.toFixed(1)}%. `;
+  if (r.ok) return reply(`${lead}That's still above ${OVERALL_TARGET}%, so you're safe.`, { intent: 'target_date' });
+  if (!r.reachable) return reply(`${lead}I can't reach ${OVERALL_TARGET}% within your timetable horizon.`, { intent: 'target_date' });
+  return reply(`${lead}If you attend every lecture after that, you reach ${OVERALL_TARGET}% on ${fmtDateLong(new Date(r.date + 'T00:00:00'))}, at ${fmtTime(r.lecture.start_time)} (${r.lecture.subject_name}) — after ${r.attended} lecture${r.attended === 1 ? '' : 's'} in a row.`, { intent: 'target_date' });
+}
+
+/** "What's due this week / today / tomorrow?" — pending tasks, assignments and exams combined, soonest first. */
+async function dueIntent(t) {
+  const now = new Date();
+  let end, label;
+  if (/\btoday\b/.test(t)) { end = endOfDayMs(now); label = 'today'; }
+  else if (/\btomorrow\b/.test(t)) { end = endOfDayMs(addDays(now, 1)); label = 'by tomorrow'; }
+  else if (/\bnext week\b/.test(t)) { end = endOfDayMs(addDays(now, 14)); label = 'in the next 14 days'; }
+  else { end = endOfDayMs(addDays(now, 7)); label = 'in the next 7 days'; }
+  const [tk, asg, ex] = await Promise.all([tasks.pending(200), assignmentsRepository.pending(100), examsRepository.upcoming(50)]);
+  const items = [
+    ...tk.filter((x) => x.due_at).map((x) => ({ at: x.due_at, kind: 'Task', text: x.title })),
+    ...asg.filter((x) => x.due_at).map((x) => ({ at: x.due_at, kind: 'Assignment', text: `${x.title}${x.subject_name ? ` (${x.subject_name})` : ''}` })),
+    ...ex.map((x) => ({ at: x.exam_at, kind: 'Exam', text: `${x.title}${x.subject_name ? ` (${x.subject_name})` : ''}` })),
+  ].sort((a, b) => a.at - b.at);
+  const overdue = items.filter((x) => x.at < Date.now() && x.kind !== 'Exam');
+  const due = items.filter((x) => x.at >= Date.now() && x.at <= end);
+  if (!due.length && !overdue.length) return reply(`Nothing is due ${label}. You're clear!`, { intent: 'due' });
+  const out = [];
+  if (overdue.length) out.push(`⚠ Overdue:\n${overdue.slice(0, 6).map((x) => `• ${x.kind}: ${x.text} — was due ${fmtWhen(x.at)}`).join('\n')}`);
+  if (due.length) out.push(`Due ${label}:\n${due.slice(0, 12).map((x) => `• ${x.kind}: ${x.text} — ${fmtWhen(x.at)}`).join('\n')}`);
+  return reply(out.join('\n\n'), { intent: 'due' });
+}
+const endOfDayMs = (d) => { const c = new Date(d); c.setHours(23, 59, 59, 999); return c.getTime(); };
 
 async function allReminders() {
   const list = await remindersRepository.user();

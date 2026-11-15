@@ -5,9 +5,10 @@ import {
 } from '../database/repositories';
 import { buildLecturePrompts, buildBriefingPrompts, backupPrompt, SLOT_BASE } from './college/lectureLogic';
 import { syncSubscriptionReminders } from './subscriptions';
-import { overall } from './college/attendance';
-import { todayStr, toDateStr, isoWeekday, WEEKDAYS_LONG, fmtTime } from '../utils/date';
+import { overall, overallRecovery, OVERALL_TARGET } from './college/attendance';
+import { todayStr, toDateStr, isoWeekday, WEEKDAYS_LONG, fmtTime, fmtDateStr } from '../utils/date';
 
+const o_total = (summary) => summary.reduce((a, x) => a + x.total, 0);
 const available = () => !!Native?.setPrompts;
 const last = {};
 
@@ -34,9 +35,16 @@ export async function syncPrompts() {
 export async function pushWidget() {
   if (!Native?.setWidgetData) return;
   const today = todayStr();
-  const [rows, marks, cancelled, summary] = await Promise.all([
-    timetableRepository.forDay(isoWeekday()), attendanceRepository.forDate(today), cancelledRepository.forDate(today), attendanceRepository.summary(),
+  const [rows, marks, cancelled, summary, week] = await Promise.all([
+    timetableRepository.forDay(isoWeekday()), attendanceRepository.forDate(today), cancelledRepository.forDate(today), attendanceRepository.summary(), timetableRepository.week(),
   ]);
+  let goal = '';
+  if (o_total(summary) > 0) {
+    const r = overallRecovery(summary, week, 0);
+    goal = r.ok ? `Above ${OVERALL_TARGET}% ✓ You're safe`
+      : r.reachable && r.date ? `${OVERALL_TARGET}% on ${fmtDateStr(r.date)} · ${fmtTime(r.lecture.start_time)} ${r.lecture.subject_name}`
+      : week.length ? `${OVERALL_TARGET}% not reachable soon` : 'Add timetable to see the 75% date';
+  }
   const o = overall(summary);
   const cancelledIds = new Set(cancelled.map((c) => c.timetable_id));
   const sym = (l) => {
@@ -48,7 +56,7 @@ export async function pushWidget() {
   if (rows.length > 4) lines[3] = `+${rows.length - 3} more lectures`;
   await Native.setWidgetData(JSON.stringify({
     title: `Today · ${WEEKDAYS_LONG[isoWeekday() - 1]}`, pct: o.pct === null ? '' : `${o.pct.toFixed(1)}%`,
-    lines: rows.length ? lines : ['No lectures today'],
+    lines: rows.length ? lines : ['No lectures today'], goal,
   }));
 }
 

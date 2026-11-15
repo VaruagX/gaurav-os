@@ -39,6 +39,8 @@ class AgendaWidget : AppWidgetProvider() {
         val t = lines?.optString(i, "") ?: ""
         v.setTextViewText(LINE_IDS[i], if (t.isBlank() && i == 0) "Open the app once to load today's schedule" else t)
       }
+      v.setTextViewText(R.id.w_goal, d.optString("goal", ""))
+      v.setViewVisibility(R.id.w_goal, if (d.optString("goal", "").isBlank()) android.view.View.GONE else android.view.View.VISIBLE)
       v.setOnClickPendingIntent(R.id.w_root, link(ctx, "gauravos://attendance", 1))
       v.setOnClickPendingIntent(R.id.w_task, link(ctx, "gauravos://quick/task", 2))
       v.setOnClickPendingIntent(R.id.w_expense, link(ctx, "gauravos://quick/expense", 3))

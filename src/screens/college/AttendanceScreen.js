@@ -10,6 +10,7 @@ import { pct, classesNeeded, classesCanSkip, attendanceStatus, overall, shortage
 import { todayStr, fmtDateStr, isoWeekday, fmtTime, WEEKDAYS_LONG } from '../../utils/date';
 import { confirm, attempt, toast } from '../../utils/ui';
 import BunkPlannerSheet from './BunkPlannerSheet';
+import TargetPlanner from './TargetPlanner';
 import { ArchiveForm, ArchiveList } from './SemesterSheets';
 import { pendingLectures } from '../../services/college/lectureLogic';
 
@@ -146,6 +147,7 @@ export default function AttendanceScreen() {
               <T v="small" style={{ width: 54, textAlign: 'right', fontWeight: '800' }}>{o.pct === null ? '—' : o.pct.toFixed(2)}</T>
             </View>
           </Card>
+          <TargetPlanner summary={summary} />
           {summary.map((s) => {
             const p = pct(s.present, s.total);
             const st = attendanceStatus(s.present, s.total, s.target_pct);

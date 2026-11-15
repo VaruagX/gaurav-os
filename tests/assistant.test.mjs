@@ -142,3 +142,19 @@ test('assistant: extra commands (attendance by voice, bunk, money, summary, remi
   assert.equal(r10.intent, 'tasks');
   assert.ok(sid);
 });
+
+test('assistant: smarter answers (due this week, 75% date, bunk with overall)', async () => {
+  const { assignmentsRepository } = await import('../src/database/repositories/index.js');
+  const sid = (await subjectsRepository.findByName('ML')).id;
+  await assignmentsRepository.insert({ subject_id: sid, title: 'ML lab report', due_at: Date.now() + 2 * 86400000, status: 'pending', created_at: Date.now() });
+  const d = await handleCommand("what's due this week?");
+  assert.equal(d.intent, 'due'); assert.match(d.reply, /ML lab report/);
+  const w = await handleCommand('when will I reach 75%?');
+  assert.equal(w.intent, 'target_date');
+  const w2 = await handleCommand('if I miss 2 days when will I reach 75%');
+  assert.equal(w2.intent, 'target_date');
+  const b = await handleCommand('can I bunk tomorrow?');
+  assert.equal(b.intent, 'bunk');
+  const f = await handleCommand('can I skip on friday');
+  assert.equal(f.intent, 'bunk');
+});
